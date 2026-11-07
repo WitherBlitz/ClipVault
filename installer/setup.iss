@@ -1,4 +1,4 @@
-#define AppVersion "0.1.1"
+#define AppVersion "0.2.0"
 [Setup]
 AppId={{BBCA71EA-6283-43CF-8A72-25A20D3D0772}
 AppName=ClipVault

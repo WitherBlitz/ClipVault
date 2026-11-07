@@ -28,8 +28,8 @@ try {
     if (-not (Test-Path -LiteralPath $compiler)) { throw 'Install Inno Setup 6 first.' }
     & $compiler 'installer\setup.iss'
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
-    Copy-Item -LiteralPath 'target\release\clipvault.exe' -Destination 'dist\ClipVault-0.1.1-x64.exe' -Force
-    $hashes = Get-Item -LiteralPath 'dist\ClipVault-0.1.1-x64.exe','dist\ClipVault-Setup-0.1.1-x64.exe','dist\THIRD_PARTY_NOTICES.txt' | Sort-Object Name | ForEach-Object {
+    Copy-Item -LiteralPath 'target\release\clipvault.exe' -Destination 'dist\ClipVault-0.2.0-x64.exe' -Force
+    $hashes = Get-Item -LiteralPath 'dist\ClipVault-0.2.0-x64.exe','dist\ClipVault-Setup-0.2.0-x64.exe','dist\THIRD_PARTY_NOTICES.txt' | Sort-Object Name | ForEach-Object {
         $hash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
         '{0}  {1}' -f $hash.Hash.ToLowerInvariant(), $_.Name
     }

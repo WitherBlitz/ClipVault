@@ -8,12 +8,14 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if (Get-ItemProperty -LiteralPath $runKey -Name ClipVault -ErrorAction SilentlyContinue) { throw 'Existing ClipVault startup setting; refusing to alter it' }
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{BBCA71EA-6283-43CF-8A72-25A20D3D0772}_is1'
 if (Test-Path -LiteralPath $uninstallKey) { throw 'Existing ClipVault installation; refusing to replace it' }
-$installer = Join-Path $repository 'dist\ClipVault-Setup-0.1.1-x64.exe'
+$installer = Join-Path $repository 'dist\ClipVault-Setup-0.2.0-x64.exe'
 $installLog = Join-Path $workspace 'installer-install.log'
 $args = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/NOICONS', '/TASKS=""', "/DIR=`"$testRoot`"", "/LOG=`"$installLog`"")
 $originalLocalAppData = $env:LOCALAPPDATA
+$originalNoSync = $env:CLIPVAULT_NO_SYNC
 try {
 $env:LOCALAPPDATA = Join-Path $testRoot 'test-local-appdata'
+$env:CLIPVAULT_NO_SYNC = '1'
 $setup = Start-Process -FilePath $installer -ArgumentList $args -PassThru -WindowStyle Hidden
 if (-not $setup.WaitForExit(30000)) { throw 'Installer did not finish within 30 seconds' }
 if ($setup.ExitCode -ne 0) { throw "Installer exit $($setup.ExitCode)" }
@@ -54,5 +56,6 @@ Write-Output 'PASS: per-user install, EXE hash, automatic startup, background la
     $uninstaller = Join-Path $testRoot 'unins000.exe'
     if (Test-Path -LiteralPath $uninstaller) { Start-Process -FilePath $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -Wait -WindowStyle Hidden }
     $env:LOCALAPPDATA = $originalLocalAppData
+    $env:CLIPVAULT_NO_SYNC = $originalNoSync
     if ((Test-Path -LiteralPath $testRoot) -and $testRoot.StartsWith($workspace + '\', [System.StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
 }

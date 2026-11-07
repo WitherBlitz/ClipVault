@@ -1,7 +1,9 @@
 use clipvault::{
     clipboard::{self, Capture, wide},
-    model::{Kind, Preview, page_range},
+    model::{Kind, Preview, Record, page_range},
     store::{Result, Store},
+    sync::{self, PeerHistory, SyncEvent, SyncHandle},
+    transfer::{self, EntrySummary as View},
 };
 use std::{
     cell::RefCell,
@@ -33,24 +35,87 @@ const PAUSE: usize = 20;
 const STARTUP: usize = 21;
 const CLEAR: usize = 22;
 const QUIT: usize = 23;
+const SYNC: usize = 24;
 const ROW: usize = 100;
+const TAB: usize = 200;
+const TAB_PREV: usize = 203;
+const TAB_NEXT: usize = 204;
 const BG: u32 = 0x00231d18;
 const CARD: u32 = 0x00332b24;
 const INK: u32 = 0x00f8f3ee;
 const MUTED: u32 = 0x00b9b2aa;
 const ACCENT: u32 = 0x00b8e585;
 
-#[derive(Clone)]
-struct View {
-    id: String,
-    title: String,
-    detail: String,
-    kind: Kind,
-    preview: Option<Preview>,
+#[derive(Default)]
+struct Sources {
+    local_name: String,
+    local: Vec<View>,
+    peers: Vec<PeerHistory>,
+    selected: Option<String>,
+    tab_page: usize,
+}
+impl Sources {
+    fn entries(&self) -> &[View] {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.peers.iter().find(|p| &p.id == id))
+            .map(|p| p.entries.as_slice())
+            .unwrap_or(&self.local)
+    }
+    fn name(&self) -> &str {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.peers.iter().find(|p| &p.id == id))
+            .map(|p| p.name.as_str())
+            .unwrap_or(&self.local_name)
+    }
+    fn count(&self) -> usize {
+        self.peers.len() + 1
+    }
+    fn selected_index(&self) -> usize {
+        self.selected
+            .as_ref()
+            .and_then(|id| self.peers.iter().position(|p| &p.id == id))
+            .map(|n| n + 1)
+            .unwrap_or(0)
+    }
+    fn select(&mut self, index: usize) {
+        if index < self.count() {
+            self.selected = if index == 0 {
+                None
+            } else {
+                Some(self.peers[index - 1].id.clone())
+            };
+        }
+    }
+    fn update(&mut self, peers: Vec<PeerHistory>) {
+        self.peers = peers;
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|id| !self.peers.iter().any(|p| &p.id == id))
+        {
+            self.selected = None;
+        }
+        self.tab_page = self.tab_page.min((self.count() - 1) / 3);
+    }
+    fn tab_name(&self, index: usize) -> String {
+        if index == 0 {
+            format!("{} (this PC)", self.local_name)
+        } else {
+            let peer = &self.peers[index - 1];
+            format!(
+                "{}{}",
+                peer.name,
+                if peer.online { "" } else { " · offline" }
+            )
+        }
+    }
 }
 enum Command {
     Capture(Capture),
     Restore(String),
+    RestoreRemote(String, String),
     Clear,
 }
 struct Update {
@@ -65,7 +130,10 @@ struct App {
     icon: HICON,
     commands: Sender<Command>,
     updates: Receiver<Update>,
-    entries: Vec<View>,
+    sources: Sources,
+    network: Option<SyncHandle>,
+    sync_updates: Receiver<SyncEvent>,
+    control_updates: Sender<Update>,
     page: usize,
     paused: bool,
     status: String,
@@ -198,7 +266,22 @@ pub fn run() -> Result<()> {
                 paused,
             )
         });
-        let storage_thread = thread::spawn(move || worker(data, window, rx, utx));
+        let default_sync = !isolated && std::env::var_os("CLIPVAULT_NO_SYNC").is_none();
+        let (network, sync_updates) = match sync::start(data.clone(), default_sync) {
+            Ok((network, events)) => (Some(network), events),
+            Err(error) => {
+                let (sender, events) = mpsc::channel();
+                let _ = sender.send(SyncEvent::Status(format!("Sync unavailable: {error}")));
+                (None, events)
+            }
+        };
+        let local_name = network
+            .as_ref()
+            .map(|n| n.local_name())
+            .unwrap_or_else(|| std::env::var("COMPUTERNAME").unwrap_or_else(|_| "This PC".into()));
+        let worker_network = network.clone();
+        let control_updates = utx.clone();
+        let storage_thread = thread::spawn(move || worker(data, window, rx, utx, worker_network));
         let mut app = App {
             hwnd,
             buttons: vec![],
@@ -207,7 +290,13 @@ pub fn run() -> Result<()> {
             icon,
             commands: tx,
             updates: urx,
-            entries: vec![],
+            sources: Sources {
+                local_name,
+                ..Sources::default()
+            },
+            network,
+            sync_updates,
+            control_updates,
             page: 0,
             paused: false,
             status: "Starting encrypted history…".into(),
@@ -224,6 +313,7 @@ pub fn run() -> Result<()> {
         app.add_button(PREV, "← Previous", false);
         app.add_button(NEXT, "Next →", false);
         app.add_button(MENU, "•••", false);
+        app.add_tabs();
         app.layout();
         if AddClipboardFormatListener(hwnd) == 0 {
             return Err("Windows refused the clipboard listener".into());
@@ -266,6 +356,9 @@ pub fn run() -> Result<()> {
         }
         APP.with(|v| {
             if let Some(app) = v.borrow_mut().take() {
+                if let Some(network) = &app.network {
+                    network.shutdown();
+                }
                 app.tray(NIM_DELETE);
                 DeleteObject(app.font);
                 DeleteObject(app.heading);
@@ -316,7 +409,13 @@ fn capture_worker(
     }
 }
 
-fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Sender<Update>) {
+fn worker(
+    root: PathBuf,
+    window: usize,
+    commands: Receiver<Command>,
+    updates: Sender<Update>,
+    network: Option<SyncHandle>,
+) {
     let mut store = match Store::open(root) {
         Ok(v) => v,
         Err(e) => {
@@ -333,6 +432,7 @@ fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Se
             .iter()
             .map(|r| View {
                 id: r.id.clone(),
+                created: r.created,
                 title: r.title.clone(),
                 detail: r.detail.clone(),
                 kind: r.kind.clone(),
@@ -351,8 +451,11 @@ fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Se
             .warnings
             .first()
             .cloned()
-            .unwrap_or_else(|| "Ready · history stays on this PC".into()),
+            .unwrap_or_else(|| "Ready · select an item to copy".into()),
     );
+    if let Some(network) = &network {
+        network.publish(transfer::summaries(&store));
+    }
     for command in commands {
         let result: Result<String> = (|| match command {
             Command::Capture(capture) => {
@@ -361,7 +464,7 @@ fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Se
                 }
                 let sources = capture.sources.clone();
                 store.insert(capture.into_record(), &sources)?;
-                Ok("Ready · history stays on this PC".into())
+                Ok("Ready · select an item to copy".into())
             }
             Command::Restore(id) => {
                 publish(&store, &updates, "Preparing item for the clipboard…".into());
@@ -371,16 +474,19 @@ fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Se
                     .iter()
                     .find(|r| r.id == id)
                     .ok_or("Entry was removed")?;
-                let mut result = Err("Clipboard is busy".into());
-                for _ in 0..12 {
-                    result = clipboard::write(window as HWND, &record.formats, &paths);
-                    if result.is_ok() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(40));
-                }
-                result?;
+                restore_clipboard(window, record, &paths)?;
                 Ok("Copied · paste with Ctrl+V".into())
+            }
+            Command::RestoreRemote(peer, id) => {
+                publish(
+                    &store,
+                    &updates,
+                    "Downloading item from the selected PC…".into(),
+                );
+                let network = network.as_ref().ok_or("Network sync is unavailable")?;
+                let (record, paths) = network.restore(&peer, &id)?;
+                restore_clipboard(window, &record, &paths)?;
+                Ok("Copied from remote PC · paste with Ctrl+V".into())
             }
             Command::Clear => {
                 // Staged file paths must not outlive their payloads on the clipboard.
@@ -401,7 +507,22 @@ fn worker(root: PathBuf, window: usize, commands: Receiver<Command>, updates: Se
             &updates,
             result.unwrap_or_else(|e| format!("Could not complete: {e}")),
         );
+        if let Some(network) = &network {
+            network.publish(transfer::summaries(&store));
+        }
     }
+}
+
+fn restore_clipboard(window: usize, record: &Record, paths: &[PathBuf]) -> Result<()> {
+    let mut result = Err("Clipboard is busy".into());
+    for _ in 0..12 {
+        result = clipboard::write(window as HWND, &record.formats, paths);
+        if result.is_ok() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
+    result.map(|_| ())
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -434,7 +555,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 OPEN|WM_HOTKEY=>{app.toggle();0}
                 TRAY=>{match lp as u32 & 0xffff {NIN_SELECT|KEY_SELECT=>app.toggle(),WM_RBUTTONUP|WM_CONTEXTMENU=>app.menu(),_=>{}}0}
                 WM_TIMER=>{
-                    while let Ok(update)=app.updates.try_recv() { if let Some(entries)=update.entries {app.entries=entries;} app.status=update.status; app.refresh(); }
+                    while let Ok(update)=app.updates.try_recv() { if let Some(entries)=update.entries {app.sources.local=entries;} app.status=update.status; app.refresh(); }
+                    while let Ok(update)=app.sync_updates.try_recv() {
+                        match update {SyncEvent::Peers(peers)=>app.sources.update(peers),SyncEvent::Status(status)=>app.status=status}
+                        app.refresh();
+                    }
                     0
                 }
                 WM_COMMAND=>{
@@ -442,16 +567,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     match command {
                         PREV=>{app.page=app.page.saturating_sub(1);app.refresh();}
                         NEXT=>{app.page=(app.page+1).min(9);app.refresh();}
+                        TAB_PREV=>{app.sources.tab_page=app.sources.tab_page.saturating_sub(1);app.refresh();}
+                        TAB_NEXT=>{app.sources.tab_page=(app.sources.tab_page+1).min((app.sources.count()-1)/3);app.refresh();}
+                        n if (TAB..TAB+3).contains(&n)=>{app.sources.select(app.sources.tab_page*3+n-TAB);app.page=0;app.refresh();}
                         MENU=>app.menu(),
                         PAUSE=>{app.paused = !app.paused;app.capture_paused.store(app.paused,Ordering::Relaxed);app.status=if app.paused {"Capture paused".into()} else {"Capture resumed".into()};app.refresh();}
                         STARTUP=>{match set_startup(!app.startup) {Ok(())=>{app.startup = !app.startup;app.status="Sign-in preference updated".into();},Err(e)=>app.status=e}app.refresh();}
+                        SYNC=>app.toggle_sync(),
                         CLEAR=>{
-                            let answer=MessageBoxW(hwnd,wide("Permanently clear all saved clipboard history and file snapshots?").as_ptr(),wide("Clear ClipVault history").as_ptr(),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
+                            let answer=MessageBoxW(hwnd,wide("Permanently clear this computer's saved clipboard history and file snapshots?").as_ptr(),wide("Clear local ClipVault history").as_ptr(),MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2);
                             if answer==IDYES {let _=app.commands.send(Command::Clear);}
                         }
                         QUIT=>{DestroyWindow(hwnd);}
                         n if (ROW..ROW+10).contains(&n)=>{
-                            if let Some(entry)=app.entries.get(app.page*10+n-ROW) {let _=app.commands.send(Command::Restore(entry.id.clone())); ShowWindow(hwnd,SW_HIDE);}
+                            if let Some(entry)=app.sources.entries().get(app.page*10+n-ROW) {
+                                let command=if let Some(peer)=&app.sources.selected {Command::RestoreRemote(peer.clone(),entry.id.clone())} else {Command::Restore(entry.id.clone())};
+                                let _=app.commands.send(command); ShowWindow(hwnd,SW_HIDE);
+                            }
                         }
                         _=>{}
                     }0
@@ -469,6 +601,36 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 impl App {
+    fn toggle_sync(&self) {
+        if let Some(network) = self.network.clone() {
+            let enabled = !network.is_enabled();
+            let updates = self.control_updates.clone();
+            // This control path must not queue behind an active file download.
+            thread::spawn(move || {
+                let status = match network.set_enabled(enabled) {
+                    Ok(()) => {
+                        if enabled {
+                            "All LAN/Tailscale PCs can read this history".into()
+                        } else {
+                            "Network sharing disabled".into()
+                        }
+                    }
+                    Err(error) => format!("Could not save sharing preference: {error}"),
+                };
+                let _ = updates.send(Update {
+                    entries: None,
+                    status,
+                });
+            });
+        }
+    }
+    fn add_tabs(&mut self) {
+        for n in 0..3 {
+            self.add_button(TAB + n, "", false);
+        }
+        self.add_button(TAB_PREV, "‹", false);
+        self.add_button(TAB_NEXT, "›", false);
+    }
     fn update_dpi(&mut self, dpi: i32) {
         if self.dpi == dpi {
             return;
@@ -545,8 +707,8 @@ impl App {
             info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
             GetMonitorInfoW(monitor, &mut info);
             let available = (info.rcWork.bottom - info.rcWork.top) * 96 / self.dpi;
-            self.row_height = ((available - 180) / 10).clamp(30, 56);
-            self.height = 150 + self.row_height * 10;
+            self.row_height = ((available - 216) / 10).clamp(30, 56);
+            self.height = 186 + self.row_height * 10;
             SetWindowPos(
                 self.hwnd,
                 ptr::null_mut(),
@@ -560,7 +722,7 @@ impl App {
                 MoveWindow(
                     self.buttons[n],
                     self.px(12),
-                    self.px(88 + n as i32 * self.row_height),
+                    self.px(124 + n as i32 * self.row_height),
                     self.px(394),
                     self.px(self.row_height - 4),
                     1,
@@ -590,13 +752,39 @@ impl App {
                 self.px(32),
                 1,
             );
+            for n in 0..3 {
+                MoveWindow(
+                    self.buttons[13 + n],
+                    self.px(12 + n as i32 * 112),
+                    self.px(90),
+                    self.px(108),
+                    self.px(28),
+                    1,
+                );
+            }
+            MoveWindow(
+                self.buttons[16],
+                self.px(350),
+                self.px(90),
+                self.px(26),
+                self.px(28),
+                1,
+            );
+            MoveWindow(
+                self.buttons[17],
+                self.px(380),
+                self.px(90),
+                self.px(26),
+                self.px(28),
+                1,
+            );
             self.refresh();
         }
     }
     fn refresh(&self) {
         unsafe {
             for n in 0..10 {
-                if let Some(item) = self.entries.get(self.page * 10 + n) {
+                if let Some(item) = self.sources.entries().get(self.page * 10 + n) {
                     SetWindowTextW(
                         self.buttons[n],
                         wide(&format!(
@@ -614,6 +802,23 @@ impl App {
             }
             EnableWindow(self.buttons[10], (self.page > 0) as i32);
             EnableWindow(self.buttons[11], (self.page < 9) as i32);
+            for n in 0..3 {
+                let index = self.sources.tab_page * 3 + n;
+                if index < self.sources.count() {
+                    SetWindowTextW(
+                        self.buttons[13 + n],
+                        wide(&self.sources.tab_name(index)).as_ptr(),
+                    );
+                    ShowWindow(self.buttons[13 + n], SW_SHOWNA);
+                } else {
+                    ShowWindow(self.buttons[13 + n], SW_HIDE);
+                }
+            }
+            EnableWindow(self.buttons[16], (self.sources.tab_page > 0) as i32);
+            EnableWindow(
+                self.buttons[17],
+                ((self.sources.tab_page + 1) * 3 < self.sources.count()) as i32,
+            );
             InvalidateRect(self.hwnd, ptr::null(), 0);
             for button in &self.buttons {
                 InvalidateRect(*button, ptr::null(), 0);
@@ -695,7 +900,12 @@ impl App {
                     self.paused,
                 ),
                 (STARTUP, "Start at sign-in", self.startup),
-                (CLEAR, "Clear history…", false),
+                (
+                    SYNC,
+                    "Share history with ALL LAN / Tailscale PCs",
+                    self.network.as_ref().is_some_and(|n| n.is_enabled()),
+                ),
+                (CLEAR, "Clear local history…", false),
                 (QUIT, "Exit ClipVault", false),
             ] {
                 AppendMenuW(
@@ -749,11 +959,11 @@ impl App {
             dc,
             &format!(
                 "{} / 100 items  ·  {}",
-                self.entries.len(),
+                self.sources.entries().len(),
                 if self.paused {
                     "Paused"
                 } else {
-                    "Clipboard history"
+                    self.sources.name()
                 }
             ),
             RECT {
@@ -766,14 +976,22 @@ impl App {
             ACCENT,
             DT_SINGLELINE,
         );
-        let status = if self.paused {
-            "Capture paused · resume from the ••• menu"
-        } else {
-            &self.status
-        };
+        let status = format!(
+            "Sharing {} · {}",
+            if self.network.as_ref().is_some_and(|n| n.is_enabled()) {
+                "ON: all network PCs"
+            } else {
+                "OFF"
+            },
+            if self.paused {
+                "Capture paused"
+            } else {
+                &self.status
+            }
+        );
         text(
             dc,
-            status,
+            &status,
             RECT {
                 left: self.px(18),
                 top: self.px(68),
@@ -797,15 +1015,19 @@ impl App {
             MUTED,
             DT_SINGLELINE | DT_CENTER,
         );
-        if page_range(self.page, self.entries.len()).is_empty() {
-            client.top = self.px(135);
+        if page_range(self.page, self.sources.entries().len()).is_empty() {
+            client.top = self.px(168);
             client.bottom = self.px(self.height - 80);
             client.left = self.px(35);
             client.right = self.px(385);
             text(
                 dc,
-                if self.entries.is_empty() {
-                    "Your clipboard, remembered.\n\nCopy text, an image, or files.\nThey will appear here.\n\nClick an item to copy it again.\nThen paste with Ctrl+V."
+                if self.sources.entries().is_empty() {
+                    if self.sources.selected.is_some() {
+                        "No saved items from this PC yet.\n\nBoth computers need ClipVault running,\nwith network sharing enabled.\n\nOffline PCs reconnect automatically."
+                    } else {
+                        "Your clipboard, remembered.\n\nCopy text, an image, or files.\nSelect a PC tab to browse its history.\n\nClick an item, then paste with Ctrl+V."
+                    }
                 } else {
                     "No items on this page yet.\n\nUse the left arrow for newer items."
                 },
@@ -823,7 +1045,7 @@ impl App {
         fill(dc, &r, if selected { 0x00524636 } else { CARD });
         let id = draw.CtlID as usize;
         if (ROW..ROW + 10).contains(&id) {
-            if let Some(entry) = self.entries.get(self.page * 10 + id - ROW) {
+            if let Some(entry) = self.sources.entries().get(self.page * 10 + id - ROW) {
                 let pad = self.px(10);
                 let box_size = (r.bottom - r.top - self.px(10)).min(self.px(42));
                 let left = r.left + pad;
@@ -880,12 +1102,35 @@ impl App {
                     );
                 }
             }
+        } else if (TAB..TAB + 3).contains(&id) {
+            let index = self.sources.tab_page * 3 + id - TAB;
+            if index < self.sources.count() {
+                let active = index == self.sources.selected_index();
+                if active {
+                    fill(dc, &r, 0x00524636);
+                }
+                text(
+                    dc,
+                    &self.sources.tab_name(index),
+                    RECT {
+                        left: r.left + self.px(5),
+                        top: r.top + self.px(5),
+                        right: r.right - self.px(5),
+                        bottom: r.bottom,
+                    },
+                    self.font,
+                    if active { ACCENT } else { MUTED },
+                    DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                );
+            }
         } else {
             text(
                 dc,
                 match id {
                     PREV => "← Previous",
                     NEXT => "Next →",
+                    TAB_PREV => "‹",
+                    TAB_NEXT => "›",
                     _ => "•••",
                 },
                 RECT {
@@ -935,6 +1180,14 @@ fn text(dc: HDC, value: &str, mut r: RECT, font: HFONT, color: u32, flags: u32) 
     }
 }
 fn thumbnail(dc: HDC, p: &Preview, x: i32, y: i32, size: i32) {
+    if p.width == 0
+        || p.height == 0
+        || p.width > 80
+        || p.height > 80
+        || p.rgba.len() != p.width as usize * p.height as usize * 4
+    {
+        return;
+    }
     let mut pixels = Vec::with_capacity(p.rgba.len());
     for (n, rgba) in p.rgba.chunks_exact(4).enumerate() {
         let bg = if (n as u32 % p.width / 8 + n as u32 / p.width / 8).is_multiple_of(2) {
@@ -1043,6 +1296,108 @@ fn set_startup(enabled: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    unsafe fn render_preview(app: &App, path: &std::path::Path) {
+        unsafe {
+            let width = app.px(420);
+            let height = app.px(app.height);
+            let screen = GetDC(ptr::null_mut());
+            let dc = CreateCompatibleDC(screen);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = 40;
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            let mut bits = ptr::null_mut();
+            let bitmap =
+                CreateDIBSection(screen, &info, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
+            assert!(!bitmap.is_null());
+            let previous = SelectObject(dc, bitmap);
+            app.paint(dc);
+            for button in &app.buttons {
+                if GetWindowLongPtrW(*button, GWL_STYLE) as u32 & WS_VISIBLE == 0 {
+                    continue;
+                }
+                let mut rect: RECT = std::mem::zeroed();
+                GetWindowRect(*button, &mut rect);
+                MapWindowPoints(
+                    ptr::null_mut(),
+                    app.hwnd,
+                    (&mut rect as *mut RECT).cast(),
+                    2,
+                );
+                SetViewportOrgEx(dc, rect.left, rect.top, ptr::null_mut());
+                let mut draw: DRAWITEMSTRUCT = std::mem::zeroed();
+                draw.CtlID = GetDlgCtrlID(*button) as u32;
+                draw.hDC = dc;
+                draw.rcItem = RECT {
+                    left: 0,
+                    top: 0,
+                    right: rect.right - rect.left,
+                    bottom: rect.bottom - rect.top,
+                };
+                if IsWindowEnabled(*button) == 0 {
+                    draw.itemState = ODS_DISABLED;
+                }
+                app.draw_button(&draw);
+            }
+            GdiFlush();
+            let buffer =
+                std::slice::from_raw_parts(bits.cast::<u8>(), width as usize * height as usize * 4);
+            let mut rgba = Vec::with_capacity(buffer.len());
+            for pixel in buffer.chunks_exact(4) {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
+            }
+            image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+                .unwrap()
+                .save(path)
+                .unwrap();
+            SelectObject(dc, previous);
+            DeleteObject(bitmap);
+            DeleteDC(dc);
+            ReleaseDC(ptr::null_mut(), screen);
+        }
+    }
+    #[test]
+    fn pc_tabs_show_separate_histories_and_preserve_local_updates() {
+        let local = View {
+            id: "local".into(),
+            created: 0,
+            title: "Local text".into(),
+            detail: String::new(),
+            kind: Kind::Text,
+            preview: None,
+        };
+        let remote = View {
+            id: "remote".into(),
+            created: 0,
+            title: "Plex text".into(),
+            detail: String::new(),
+            kind: Kind::Text,
+            preview: None,
+        };
+        let mut sources = Sources {
+            local_name: "My PC".into(),
+            local: vec![local.clone()],
+            peers: vec![PeerHistory {
+                id: "plex".into(),
+                name: "PlexPC".into(),
+                online: true,
+                entries: vec![remote],
+            }],
+            selected: Some("plex".into()),
+            tab_page: 0,
+        };
+        assert_eq!(sources.entries()[0].title, "Plex text");
+        sources.local.push(local);
+        assert_eq!(
+            sources.entries().len(),
+            1,
+            "new local copies must not replace selected PC history"
+        );
+        sources.selected = None;
+        assert_eq!(sources.entries().len(), 2);
+    }
     #[test]
     fn native_popup_pages_ten_rows_and_restores_the_selected_entry() {
         unsafe {
@@ -1078,15 +1433,36 @@ mod tests {
                 icon: ptr::null_mut(),
                 commands: tx,
                 updates: rx,
-                entries: (0..100)
-                    .map(|n| View {
-                        id: format!("id{n}"),
-                        title: format!("Test item {n}"),
-                        detail: "text".into(),
-                        kind: Kind::Text,
-                        preview: None,
-                    })
-                    .collect(),
+                sources: Sources {
+                    local_name: "My PC".into(),
+                    local: (0..100)
+                        .map(|n| View {
+                            id: format!("id{n}"),
+                            created: 0,
+                            title: format!("Test item {n}"),
+                            detail: "text".into(),
+                            kind: Kind::Text,
+                            preview: None,
+                        })
+                        .collect(),
+                    peers: vec![PeerHistory {
+                        id: "plex".into(),
+                        name: "PlexPC".into(),
+                        online: true,
+                        entries: vec![View {
+                            id: "remote1".into(),
+                            created: 0,
+                            title: "Plex text".into(),
+                            detail: String::new(),
+                            kind: Kind::Text,
+                            preview: None,
+                        }],
+                    }],
+                    ..Sources::default()
+                },
+                network: None,
+                sync_updates: mpsc::channel().1,
+                control_updates: mpsc::channel().0,
                 page: 0,
                 paused: false,
                 status: "Test".into(),
@@ -1103,6 +1479,7 @@ mod tests {
             app.add_button(PREV, "Previous", false);
             app.add_button(NEXT, "Next", false);
             app.add_button(MENU, "Menu", false);
+            app.add_tabs();
             app.layout();
             APP.with(|c| *c.borrow_mut() = Some(app));
             for _ in 0..12 {
@@ -1131,6 +1508,33 @@ mod tests {
                 SendMessageW(hwnd, WM_COMMAND, PREV, 0);
             }
             APP.with(|c| assert_eq!(c.borrow().as_ref().unwrap().page, 0));
+            SendMessageW(hwnd, WM_COMMAND, TAB + 1, 0);
+            APP.with(|c| {
+                let slot = c.borrow();
+                let app = slot.as_ref().unwrap();
+                assert_eq!(app.sources.name(), "PlexPC");
+                assert_eq!(app.sources.entries()[0].title, "Plex text");
+                assert_eq!(app.page, 0);
+                let mut tab: RECT = std::mem::zeroed();
+                let mut row: RECT = std::mem::zeroed();
+                GetWindowRect(app.buttons[13], &mut tab);
+                GetWindowRect(app.buttons[0], &mut row);
+                assert!(
+                    row.top >= tab.bottom,
+                    "PC tabs must sit above the item list"
+                );
+                if let Some(path) = std::env::var_os("CLIPVAULT_RENDER_PATH") {
+                    render_preview(app, &PathBuf::from(path));
+                }
+            });
+            SendMessageW(hwnd, WM_COMMAND, ROW, 0);
+            match commands.try_recv().unwrap() {
+                Command::RestoreRemote(peer, id) => {
+                    assert_eq!(peer, "plex");
+                    assert_eq!(id, "remote1");
+                }
+                _ => panic!("expected remote restore"),
+            }
             APP.with(|c| *c.borrow_mut() = None);
             DestroyWindow(hwnd);
             UnregisterClassW(class.as_ptr(), instance);

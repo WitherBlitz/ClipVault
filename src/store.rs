@@ -221,6 +221,44 @@ impl Store {
             })
             .collect()
     }
+    pub(crate) fn trim_cache(root: PathBuf, keep: &str) -> Result<()> {
+        let store = Self {
+            entries: VecDeque::new(),
+            warnings: vec![],
+            root,
+        };
+        let mut ids = Vec::new();
+        for item in fs::read_dir(store.root.join("items")).map_err(err)? {
+            let path = item.map_err(err)?.path();
+            if path.extension().is_some_and(|v| v == "cv")
+                && let Some(id) = path.file_stem().and_then(|v| v.to_str())
+                && safe_id(id)
+            {
+                ids.push(id.to_string());
+            }
+        }
+        ids.sort();
+        while ids.len() > 100 {
+            let index = ids
+                .iter()
+                .position(|id| id != keep)
+                .ok_or("Cannot trim cache")?;
+            store.remove_payload(&ids[index])?;
+            ids.remove(index);
+        }
+        Ok(())
+    }
+    pub(crate) fn materialize_record(root: PathBuf, record: Record) -> Result<Vec<PathBuf>> {
+        let mut entries = VecDeque::new();
+        let id = record.id.clone();
+        entries.push_back(record);
+        Self {
+            entries,
+            warnings: vec![],
+            root,
+        }
+        .materialize(&id)
+    }
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -284,10 +322,10 @@ fn snapshot(
     Ok(())
 }
 
-fn protect(data: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn protect(data: &[u8]) -> Result<Vec<u8>> {
     crypt(data, false)
 }
-fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
     crypt(data, true)
 }
 fn crypt(data: &[u8], decrypt: bool) -> Result<Vec<u8>> {
