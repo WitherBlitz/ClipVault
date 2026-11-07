@@ -109,7 +109,7 @@ pub fn run() -> Result<()> {
                 wide(&format!("ClipVault-{:x}", hasher.finish())).as_ptr(),
                 ptr::null(),
             );
-            if !other.is_null() {
+            if show && !other.is_null() {
                 PostMessageW(other, OPEN, 0, 0);
             }
             CloseHandle(mutex);

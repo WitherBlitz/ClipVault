@@ -1,4 +1,4 @@
-#define AppVersion "0.1.0"
+#define AppVersion "0.1.1"
 [Setup]
 AppId={{BBCA71EA-6283-43CF-8A72-25A20D3D0772}
 AppName=ClipVault
@@ -30,7 +30,6 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
-Name: "startup"; Description: "Start ClipVault when I sign in"; Flags: unchecked
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Icons]
@@ -38,8 +37,7 @@ Name: "{group}\ClipVault"; Filename: "{app}\ClipVault.exe"; Parameters: "--show"
 Name: "{autodesktop}\ClipVault"; Filename: "{app}\ClipVault.exe"; Parameters: "--show"; Tasks: desktopicon
 
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "ClipVault"; Flags: uninsdeletevalue
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ClipVault"; ValueData: """{app}\ClipVault.exe"""; Tasks: startup; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ClipVault"; ValueData: """{app}\ClipVault.exe"""; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\ClipVault.exe"; Parameters: "--show"; Description: "Open ClipVault"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\ClipVault.exe"; Flags: nowait

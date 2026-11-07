@@ -6,7 +6,7 @@ A native **Rust** clipboard history for Windows 10/11 x64. Text, images, and fil
 
 ## Install
 
-Download **ClipVault-Setup-0.1.0-x64.exe** from [Releases](https://github.com/WitherBlitz/ClipVault/releases/tag/v0.1.0). The installer runs per user without administrator rights. A portable EXE and SHA256 checksums are also provided. Binaries are currently unsigned.
+Download **ClipVault-Setup-0.1.1-x64.exe** from [Releases](https://github.com/WitherBlitz/ClipVault/releases/tag/v0.1.1). The installer runs per user without administrator rights, enables start-at-sign-in automatically, and immediately starts ClipVault in the background. No history popup opens during installation or sign-in. A portable EXE and SHA256 checksums are also provided. Binaries are currently unsigned.
 
 Windows may initially place the clipboard icon under the tray's overflow arrow. Drag it onto the taskbar notification area, or enable it in Windows taskbar settings. Applications cannot force Windows to keep a tray icon visible.
 
@@ -15,7 +15,7 @@ Windows may initially place the clipboard icon under the tray's overflow arrow. 
 - Copy as usual. Click the clipboard tray icon or press **Ctrl+Shift+V**.
 - Each page holds **10 items**. Use the left/right arrows for **10 pages**; only the newest **100 items** are retained. Empty pages are accessible.
 - Click an item to restore it to your clipboard, then paste with **Ctrl+V**. Tab/Enter select items; Escape dismisses; left/right keys change pages.
-- Right-click the tray icon, or click **•••**, for pause/resume, optional start at sign-in, clear history, or exit.
+- Right-click the tray icon, or click **•••**, for pause/resume, the start-at-sign-in setting, clear history, or exit. Start-at-sign-in is enabled by the installer; you can turn it off from this menu.
 - Files and folders are saved as snapshots, regardless of extension. Recalling them supplies a normal Windows file list that Explorer and compatible apps can paste. A recalled cut operation becomes a copy, protecting the original files.
 
 ## Images and files
@@ -30,7 +30,7 @@ There is **no networking, account, telemetry or cloud sync** in the app. History
 
 When you recall files, plaintext copies are materialized under `staging` inside the history directory, so other programs can paste them. These remain until their history item is evicted or cleared. Any process running as your account can access recalled files and can use DPAPI; this is protection at rest, not protection against malware running as you. An active large snapshot may finish after you pause. Very rapid clipboard changes can be missed when another application holds the clipboard locked or replaces its content before capture.
 
-The 101st distinct captured item removes the oldest item and its file payloads. Consecutive identical text/image captures are coalesced; files are snapshotted again because their contents may have changed. File snapshots preserve names and bytes, not filesystem permissions, alternate data streams, or timestamps. Clearing history asks for confirmation. Uninstall leaves history intact; clear it from the app first if desired. Start-at-sign-in is opt-in.
+The 101st distinct captured item removes the oldest item and its file payloads. Consecutive identical text/image captures are coalesced; files are snapshotted again because their contents may have changed. File snapshots preserve names and bytes, not filesystem permissions, alternate data streams, or timestamps. Clearing history asks for confirmation. Uninstall leaves history intact; clear it from the app first if desired. Uninstall also removes the startup registration.
 
 ## Build and verify
 
@@ -47,7 +47,7 @@ cargo build --locked --release
 
 The real clipboard integration tests temporarily use and restore supported clipboard content. Avoid copying during these tests. Other tests cover retention, native popup pagination/selection, encrypted restart, corrupt entries, file snapshots, snapshot integrity, locked-file eviction and PNG/DIBV5 alpha. CI runs these checks and uploads the installer and portable executable.
 
-Version 0.1.0 is an initial preview release. Automated native UI and clipboard checks pass, but interactive desktop visual testing was interrupted. Test your normal copy/paste workflows before relying on its history as a backup.
+Version 0.1.1 is a preview release. Automated native UI and clipboard checks pass, but interactive desktop visual testing was interrupted. Test your normal copy/paste workflows before relying on its history as a backup.
 
 For an isolated test instance: `clipvault.exe --data-dir C:\some\test-directory --show`. This uses a separate history and instance lock. Do not run it alongside another clipboard manager during clipboard testing.
 
