@@ -6,7 +6,7 @@ A native **Rust** clipboard history for Windows 10/11 x64. Text, images, and fil
 
 ## Install
 
-Download **ClipVault-Setup-0.1.0-x64.exe** from [Releases](https://github.com/WitherBlitz/ClipVault/releases/latest). The installer runs per user without administrator rights. A portable EXE and SHA256 checksums are also provided. Binaries are currently unsigned.
+Download **ClipVault-Setup-0.1.0-x64.exe** from [Releases](https://github.com/WitherBlitz/ClipVault/releases/tag/v0.1.0). The installer runs per user without administrator rights. A portable EXE and SHA256 checksums are also provided. Binaries are currently unsigned.
 
 Windows may initially place the clipboard icon under the tray's overflow arrow. Drag it onto the taskbar notification area, or enable it in Windows taskbar settings. Applications cannot force Windows to keep a tray icon visible.
 

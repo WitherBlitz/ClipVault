@@ -19,10 +19,10 @@
 
 ## Tasks
 
-- [ ] 1. Core/storage: write failing retention, pagination, Unicode, snapshot-after-source-delete, restart, corruption, and encryption tests. Implement src/model.rs and src/store.rs; run cargo test --lib.
-- [ ] 2. Clipboard: write real Windows clipboard roundtrip tests with prior clipboard preservation. Implement src/clipboard.rs (read, busy retry, privacy markers, format restoration, DIB preview); run cargo test --lib -- --test-threads=1.
-- [ ] 3. Native UI: implement src/ui.rs and src/main.rs, tray lifecycle, popup and native accessible buttons, paging, keyboard shortcuts, focus dismissal, pause/errors/startup. Verify UI on the real desktop and rerun the suite.
-- [ ] 4. Distribution: add icon/resource manifest, installer/setup.iss, scripts/package.ps1, CI, README and license. Run cargo fmt --check, cargo clippy --all-targets -- -D warnings, cargo test -- --test-threads=1, cargo build --release, compile installer, install/uninstall smoke test in an isolated path. Fresh reviewer checks final code and support claims; fix material findings and rerun checks.
+- [x] 1. Core/storage: retention, pagination, Unicode, file snapshots, restart, corruption, and encryption implemented and tested.
+- [x] 2. Clipboard: real Windows clipboard roundtrips, busy retry, privacy markers, companion restoration, DIB and PNG/DIBV5 alpha tested.
+- [x] 3. Native UI: tray/popup, native buttons, paging, keyboard, menus and background workers implemented; native control tests pass. Interactive visual QA was stopped with Escape and remains a documented prerelease limitation.
+- [x] 4. Distribution: resources, installer, packaging, CI, README, license and dependency notices complete. Format/lint, 13 tests, release build and isolated install/uninstall checks passed. Material independent review findings fixed.
 - [ ] 5. Publish: initialize git, commit only source and documentation, create public repository, push and tag v0.1.0, upload portable EXE/installer/checksums, verify release asset list and download hashes. Copy deliverables into outputs/.
 
 ## Review Focus
