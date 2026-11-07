@@ -23,7 +23,7 @@
 - [x] 2. Clipboard: real Windows clipboard roundtrips, busy retry, privacy markers, companion restoration, DIB and PNG/DIBV5 alpha tested.
 - [x] 3. Native UI: tray/popup, native buttons, paging, keyboard, menus and background workers implemented; native control tests pass. Interactive visual QA was stopped with Escape and remains a documented prerelease limitation.
 - [x] 4. Distribution: resources, installer, packaging, CI, README, license and dependency notices complete. Format/lint, 13 tests, release build and isolated install/uninstall checks passed. Material independent review findings fixed.
-- [ ] 5. Publish: initialize git, commit only source and documentation, create public repository, push and tag v0.1.0, upload portable EXE/installer/checksums, verify release asset list and download hashes. Copy deliverables into outputs/.
+- [x] 5. Publish: public WitherBlitz/ClipVault source and v0.1.0 preview release uploaded. Installer, portable EXE, notices and checksums downloaded and matched against the local artifacts. Local deliverables are copied into outputs/ at handoff.
 
 ## Review Focus
 

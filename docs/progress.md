@@ -4,7 +4,9 @@
 - Task 2 complete: Windows clipboard capture/restoration and image previews; initial two failures observed; PNG thumbnail upscaling diagnosed in image crate source and corrected.
 - Task 3 complete in automated coverage: native popup, tray callbacks, keyboard and menus, dedicated capture/storage workers. Interactive visual checks interrupted by physical Escape; no more desktop automation attempted.
 - Task 4 complete: formatting, lint, 13 tests, release build, resources, static C runtime, notices, installer build and isolated installation/uninstallation checks passed. Independent review findings fixed with regression coverage. See verification.md for limits.
-- Task 5 pending: create repository, push source, upload preview release and verify assets.
+- Task 5 complete: public WitherBlitz/ClipVault repository created; v0.1.0 prerelease published with installer, portable EXE, checksums and notices. All four assets were downloaded from GitHub and matched the local artifact hashes.
+
+CI follow-up: GitHub's rolling stable toolchain was Rust 1.99, introducing a new Clippy lint beyond the locally validated Rust 1.97.1. CI now pins 1.97.1 to reproduce the tested build. This workflow-only adjustment does not change release executable contents.
 
 ## Decisions and deferred checks
 
